@@ -1,0 +1,13 @@
+# Output files generated when using the skill
+raw/
+notes/
+wiki/
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+
+# OS
+.DS_Store
+Thumbs.db
