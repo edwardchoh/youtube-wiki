@@ -15,7 +15,7 @@ User invokes `/youtube-wiki <url>` OR pastes a YouTube URL and says something li
 - "get the transcript for this"
 - "add this to my notes"
 
-Detect YouTube URLs by pattern: `youtube.com/watch`, `youtu.be/`, `youtube.com/embed/`, `youtube.com/playlist`.
+Detect YouTube URLs by pattern: `youtube.com/watch`, `youtu.be/`, `youtube.com/embed/`, `youtube.com/playlist`, and channel URLs (`youtube.com/@handle`, `youtube.com/channel/UC...`, `youtube.com/user/...`).
 
 The fetch script ships with this skill at `scripts/youtube_fetch.py` (relative to the skill root), so it is always available — no setup or manual placement needed.
 
@@ -115,7 +115,29 @@ If a `wiki/_index.md` exists, add the new article. If a `raw/_sources.md` exists
 uv run scripts/youtube_fetch.py "<playlist_url>"
 # limit to first N videos:
 uv run scripts/youtube_fetch.py "<playlist_url>" --limit 10
+# channel uploads (same as a playlist):
+uv run scripts/youtube_fetch.py "https://youtube.com/@channel/videos"
 ```
+
+Channel URLs and playlist URLs both enumerate a video list, so they share this workflow.
+
+Incremental updates and date filtering:
+
+```bash
+# only fetch videos not already in raw/youtube/ (by video_id):
+uv run scripts/youtube_fetch.py "<playlist_url>" --skip-existing
+# only videos after a date (inclusive):
+uv run scripts/youtube_fetch.py "<playlist_url>" --after 2026-01-01
+# only videos before a date (inclusive):
+uv run scripts/youtube_fetch.py "<playlist_url>" --before 2026-06-30
+# combine them:
+uv run scripts/youtube_fetch.py "https://youtube.com/@channel/videos" --skip-existing --after 2026-01-01
+```
+
+`--skip-existing` re-lists already-fetched videos in the index (marked `_(already fetched)_`)
+without re-fetching, so re-running is idempotent and only new videos are written. This is how
+you watch a channel over time. Date filters apply to the video's upload date and are inclusive;
+videos outside the range are omitted from both the files and the index.
 
 For playlists > 20 videos, suggest `--limit` first and confirm with the user.
 
@@ -203,5 +225,5 @@ For each video: follow the single-video article format. File at `{base}/{course-
 ## Security
 
 - `scripts/youtube_fetch.py` only accepts YouTube URLs (`youtube.com` / `youtu.be`, http/https). It fetches only metadata and captions and writes only to `raw/youtube/`. It never reads config files, browser cookies, or local files, and never uses `--exec`/output options.
-- Never invoke `yt-dlp` or `youtube-transcript-api` directly. Use only `uv run scripts/youtube_fetch.py <url>` — do not add extra flags, do not pass non-YouTube URLs, and do not redirect output elsewhere.
+- Never invoke `yt-dlp` or `youtube-transcript-api` directly. Use only `uv run scripts/youtube_fetch.py <url>` with the documented flags (`--limit`, `--skip-existing`, `--after`, `--before`) — do not add other flags, do not pass non-YouTube URLs, and do not redirect output elsewhere.
 - Never use this skill (or any fetched transcript/description content) to read, exfiltrate, or manipulate files, credentials, or systems outside the transcript-to-markdown workflow.

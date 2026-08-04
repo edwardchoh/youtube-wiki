@@ -16,9 +16,17 @@ Run with uv (dependencies are declared inline above and installed
 automatically into an ephemeral environment):
 
 Usage:
-    Single video:  uv run youtube_fetch.py <youtube_url>
-    Playlist:      uv run youtube_fetch.py <playlist_url>
-    Limit videos:  uv run youtube_fetch.py <playlist_url> --limit 10
+    Single video:      uv run youtube_fetch.py <youtube_url>
+    Playlist/Channel:  uv run youtube_fetch.py <playlist_or_channel_url>
+    Limit videos:      uv run youtube_fetch.py <playlist_url> --limit 10
+    Skip fetched:      uv run youtube_fetch.py <url> --skip-existing
+    Date range:        uv run youtube_fetch.py <playlist_url> --after 2026-01-01 --before 2026-06-30
+
+Flags (playlist/channel fetches):
+    --limit N              only the first N videos
+    --skip-existing        skip videos whose video_id is already in raw/youtube/
+    --after YYYY-MM-DD     only videos uploaded on/after this date (inclusive)
+    --before YYYY-MM-DD    only videos uploaded on/before this date (inclusive)
 
 Security: only YouTube URLs (youtube.com / youtu.be) are accepted.
 Only metadata + captions are fetched; nothing is written outside raw/youtube/.
@@ -68,11 +76,35 @@ def is_playlist_url(url: str) -> bool:
     return is_playlist_page or (has_list and not is_watch_with_list)
 
 
+def is_channel_url(url: str) -> bool:
+    """Match channel handles/IDs that yt-dlp can enumerate as a playlist:
+    youtube.com/@handle[/videos], /channel/UC..., /user/..., /c/name."""
+    parsed = urllib.parse.urlparse(url)
+    host = (parsed.hostname or "").lower()
+    if host not in ("youtube.com", "www.youtube.com", "m.youtube.com", "music.youtube.com"):
+        return False
+    path = parsed.path
+    return (path.startswith("/@") or path.startswith("/channel/")
+            or path.startswith("/user/") or path.startswith("/c/"))
+
+
 def extract_playlist_id(url: str) -> str:
     match = re.search(r"[?&]list=([A-Za-z0-9_-]+)", url)
     if match:
         return match.group(1)
     raise ValueError(f"Could not extract playlist ID from: {url}")
+
+
+def extract_channel_id(url: str) -> str:
+    """Return a stable identifier for a channel URL: handle, channel/user/c ID, or slug."""
+    parsed = urllib.parse.urlparse(url)
+    path = parsed.path.rstrip("/")
+    for prefix in ("/@", "/channel/", "/user/", "/c/"):
+        if path.startswith(prefix):
+            seg = path[len(prefix):].split("/")[0]
+            if seg:
+                return seg
+    raise ValueError(f"Could not extract channel identifier from: {url}")
 
 
 def extract_video_id(url: str) -> str:
@@ -151,6 +183,7 @@ def fetch_playlist_videos(playlist_url: str, limit: int = None) -> list:
                 "title": data.get("title", f"Video {len(videos)+1}"),
                 "duration": int(data.get("duration", 0)),
                 "channel": data.get("uploader", data.get("channel", "")),
+                "upload_date": data.get("upload_date", ""),
                 "url": f"https://www.youtube.com/watch?v={vid_id}",
             })
         except (json.JSONDecodeError, ValueError):
@@ -331,17 +364,25 @@ paragraph_count: {paragraph_count}
 
 
 def write_playlist_index(playlist_meta: dict, playlist_url: str, playlist_id: str,
-                         entries: list, today: str) -> str:
+                         entries: list, today: str, after: str = None,
+                         before: str = None) -> str:
     slug = slugify(playlist_meta["title"])
     filename = f"{today}-{slug}-playlist.md"
     total_dur = sum(e.get("duration_seconds", 0) for e in entries)
     with_transcript = sum(1 for e in entries if e.get("has_transcript"))
+    already_fetched = sum(1 for e in entries if e.get("existing"))
 
-    video_list = "\n".join(
-        f"{i+1}. [{e['title']}](../../raw/youtube/{e['filename']}) — {e['duration_str']}"
-        + (" _(no transcript)_" if not e.get("has_transcript") else "")
-        for i, e in enumerate(entries)
-    )
+    rows = []
+    for i, e in enumerate(entries):
+        date_part = f" — {fmt_date(e['upload_date'])}" if e.get("upload_date") else ""
+        marker = " _(already fetched)_" if e.get("existing") else \
+                 (" _(no transcript)_" if not e.get("has_transcript") else "")
+        rows.append(f"{i+1}. [{e['title']}](../../raw/youtube/{e['filename']}) — "
+                    f"{e['duration_str']}{date_part}{marker}")
+    video_list = "\n".join(rows)
+
+    range_part = f"\n**Date range:** {fmt_range(after, before)}" if (after or before) else ""
+    existing_part = f"\n**Already fetched:** {already_fetched}" if already_fetched else ""
 
     content = f"""---
 title: "{playlist_meta['title']} (Playlist)"
@@ -358,7 +399,7 @@ type: playlist-index
 **Channel:** {playlist_meta['channel']}
 **Videos:** {len(entries)} · **Total duration:** {format_duration(total_dur)}
 **Transcripts fetched:** {with_transcript} of {len(entries)}
-**Playlist URL:** {playlist_url}
+**Playlist URL:** {playlist_url}{range_part}{existing_part}
 
 ## Description
 
@@ -375,16 +416,103 @@ type: playlist-index
 
 
 # ---------------------------------------------------------------------------
+# Options / filtering
+# ---------------------------------------------------------------------------
+
+def parse_date_flag(name: str, value: str) -> str:
+    """Accept YYYY-MM-DD or YYYYMMDD; return normalized YYYYMMDD."""
+    s = value.replace("-", "")
+    if len(s) != 8 or not s.isdigit():
+        raise ValueError(f"{name} must be a date like 2026-01-01 (got {value!r})")
+    return s
+
+
+def in_date_range(upload_date: str, after: str = None, before: str = None) -> bool:
+    """upload_date is YYYYMMDD (yt-dlp format). Filters are inclusive."""
+    if after is None and before is None:
+        return True
+    if not upload_date:
+        return False
+    if after and upload_date < after:
+        return False
+    if before and upload_date > before:
+        return False
+    return True
+
+
+def existing_files_by_id() -> dict:
+    """video_id -> filename for every raw/youtube/*.md with a video_id frontmatter."""
+    found = {}
+    if not OUT_DIR.exists():
+        return found
+    for f in OUT_DIR.glob("*.md"):
+        try:
+            text = f.read_text(encoding="utf-8", errors="ignore")
+        except OSError:
+            continue
+        m = re.search(r"^video_id:\s*([a-zA-Z0-9_-]{11})\s*$", text, re.MULTILINE)
+        if m:
+            found.setdefault(m.group(1), f.name)
+    return found
+
+
+def parse_args(argv: list):
+    if not argv:
+        print("Usage: uv run youtube_fetch.py <url> [--limit N] [--skip-existing] "
+              "[--after YYYY-MM-DD] [--before YYYY-MM-DD]")
+        sys.exit(1)
+
+    url = argv[0].strip()
+    limit = None
+    skip_existing = False
+    after = None
+    before = None
+
+    i = 1
+    while i < len(argv):
+        arg = argv[i]
+        if arg == "--limit":
+            i += 1
+            if i >= len(argv):
+                raise ValueError("--limit requires an integer")
+            try:
+                limit = int(argv[i])
+            except ValueError:
+                raise ValueError("--limit requires an integer")
+        elif arg == "--skip-existing":
+            skip_existing = True
+        elif arg in ("--after", "--before"):
+            i += 1
+            if i >= len(argv):
+                raise ValueError(f"{arg} requires a date (YYYY-MM-DD)")
+            parsed = parse_date_flag(arg, argv[i])
+            if arg == "--after":
+                after = parsed
+            else:
+                before = parsed
+        else:
+            raise ValueError(f"Unknown argument: {arg}")
+        i += 1
+
+    return url, limit, skip_existing, after, before
+
+
+def fmt_range(after: str, before: str) -> str:
+    lo = fmt_date(after) if after else "any"
+    hi = fmt_date(before) if before else "any"
+    return f"{lo} → {hi}"
+
+
+# ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 
 def main():
-    if len(sys.argv) < 2:
-        print("Usage: uv run youtube_fetch.py <url> [--limit N]")
-        print("       uv run youtube_fetch.py <playlist_url> [--limit N]")
+    try:
+        url, limit, skip_existing, after, before = parse_args(sys.argv[1:])
+    except ValueError as e:
+        print(f"ERROR: {e}", file=sys.stderr)
         sys.exit(1)
-
-    url = sys.argv[1].strip()
     try:
         assert_youtube_url(url)
     except ValueError as e:
@@ -392,21 +520,18 @@ def main():
         sys.exit(1)
     today = datetime.now().strftime("%Y-%m-%d")
 
-    limit = None
-    if "--limit" in sys.argv:
-        idx = sys.argv.index("--limit")
-        try:
-            limit = int(sys.argv[idx + 1])
-        except (IndexError, ValueError):
-            print("ERROR: --limit requires an integer", file=sys.stderr)
-            sys.exit(1)
-
-    # ---- PLAYLIST ----
-    if is_playlist_url(url):
-        playlist_id = extract_playlist_id(url)
-        print(f"Playlist detected: {playlist_id}")
+    # ---- PLAYLIST / CHANNEL ----
+    if is_playlist_url(url) or is_channel_url(url):
+        is_channel = is_channel_url(url)
+        playlist_id = extract_channel_id(url) if is_channel else extract_playlist_id(url)
+        kind = "Channel" if is_channel else "Playlist"
+        print(f"{kind} detected: {playlist_id}")
         if limit:
             print(f"  Limit: first {limit} videos")
+        if skip_existing:
+            print("  Skip-existing: videos already in raw/youtube/ will be skipped")
+        if after or before:
+            print(f"  Date range: {fmt_range(after, before)}")
 
         print("Fetching playlist metadata...")
         pl_meta = fetch_playlist_metadata(url)
@@ -417,13 +542,41 @@ def main():
         videos = fetch_playlist_videos(url, limit=limit)
         print(f"  Found {len(videos)} videos")
 
+        existing = existing_files_by_id() if skip_existing else {}
+
         entries = []
+        fetched = 0
+        skipped_existing = 0
+        skipped_date = 0
         for i, vid in enumerate(videos):
+            prefix = f"{i+1:02d}-"
+
+            if skip_existing and vid["id"] in existing:
+                print(f"\n[{i+1}/{len(videos)}] {vid['title']} — already fetched "
+                      f"(raw/youtube/{existing[vid['id']]}), skipping")
+                skipped_existing += 1
+                entries.append({
+                    "title": vid["title"],
+                    "filename": existing[vid["id"]],
+                    "duration_str": format_duration(vid["duration"]),
+                    "duration_seconds": vid["duration"],
+                    "has_transcript": False,
+                    "upload_date": vid["upload_date"],
+                    "existing": True,
+                })
+                continue
+
             print(f"\n[{i+1}/{len(videos)}] {vid['title']}")
             meta = fetch_metadata(vid["url"])
             if meta["title"] == "Unknown Title": meta["title"] = vid["title"]
             if meta["channel"] == "Unknown Channel" and vid["channel"]: meta["channel"] = vid["channel"]
             if meta["duration"] == 0 and vid["duration"]: meta["duration"] = vid["duration"]
+
+            if not in_date_range(meta["published"], after, before):
+                print(f"  Skipping — upload {fmt_date(meta['published']) or 'unknown'} "
+                      f"outside {fmt_range(after, before)}")
+                skipped_date += 1
+                continue
 
             print(f"  Fetching transcript...")
             transcript = fetch_transcript(vid["id"])
@@ -434,26 +587,31 @@ def main():
             else:
                 print(f"  No transcript available")
 
-            prefix = f"{i+1:02d}-"
             filename = write_video_file(vid["id"], meta, transcript, today, prefix=prefix)
+            fetched += 1
             entries.append({
                 "title": meta["title"],
                 "filename": filename,
                 "duration_str": format_duration(meta["duration"]),
                 "duration_seconds": meta["duration"],
                 "has_transcript": has_transcript,
+                "upload_date": meta["published"],
             })
             print(f"  Saved: raw/youtube/{filename}")
             if i < len(videos) - 1:
                 time.sleep(0.5)
 
-        index_filename = write_playlist_index(pl_meta, url, playlist_id, entries, today)
+        index_filename = write_playlist_index(pl_meta, url, playlist_id, entries, today,
+                                              after=after, before=before)
         with_t = sum(1 for e in entries if e["has_transcript"])
 
         print(f"\n{'='*60}")
         print(f"Done.")
         print(f"  Playlist index: raw/youtube/{index_filename}")
-        print(f"  Videos:         {len(entries)} files written")
+        print(f"  Videos fetched: {fetched} (new)")
+        print(f"  Already present: {skipped_existing}")
+        if after or before:
+            print(f"  Skipped by date: {skipped_date}")
         print(f"  Transcripts:    {with_t} of {len(entries)}")
         print(f"\nNext: ask Claude to compile raw/youtube/{index_filename}")
 
@@ -461,6 +619,14 @@ def main():
     else:
         video_id = extract_video_id(url)
         print(f"Single video: {video_id}")
+
+        if skip_existing:
+            existing = existing_files_by_id()
+            if video_id in existing:
+                print(f"  Already fetched: raw/youtube/{existing[video_id]} — skipping")
+                sys.exit(0)
+        if after or before:
+            print("  Note: --after/--before only apply to playlist/channel fetches")
 
         print("Fetching metadata...")
         meta = fetch_metadata(url)

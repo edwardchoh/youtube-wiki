@@ -35,6 +35,7 @@ Open your project in Claude Code, then:
 ```
 /youtube-wiki https://youtube.com/watch?v=...          # single video
 /youtube-wiki https://youtube.com/playlist?list=...    # full playlist or course
+/youtube-wiki https://youtube.com/@channel/videos      # a channel's uploads
 /youtube-wiki <playlist_url> --limit 10                # first 10 videos only
 ```
 
@@ -43,8 +44,18 @@ The fetch script ships with the skill and is run via uv:
 ```bash
 uv run scripts/youtube_fetch.py https://youtube.com/watch?v=...          # single video
 uv run scripts/youtube_fetch.py https://youtube.com/playlist?list=...    # full playlist
+uv run scripts/youtube_fetch.py https://youtube.com/@channel/videos      # channel uploads
 uv run scripts/youtube_fetch.py <playlist_url> --limit 10                # first 10 videos
+uv run scripts/youtube_fetch.py <playlist_url> --skip-existing           # only new videos
+uv run scripts/youtube_fetch.py <playlist_url> --after 2026-01-01        # uploads on/after date
+uv run scripts/youtube_fetch.py <playlist_url> --before 2026-06-30       # uploads on/before date
 ```
+
+- **Watch a channel over time** — re-run `--skip-existing` periodically; it skips any
+  `video_id` already in `raw/youtube/`, so only new uploads are fetched, and the playlist
+  index re-lists the rest as already fetched.
+- **Date filtering** — `--after` / `--before` (inclusive, `YYYY-MM-DD`) restrict to a window
+  of upload dates. Combine with `--skip-existing` for incremental catches up to a date.
 
 Or natural language: *"compile this video"*, *"process this playlist"*, *"get the transcript for this"* — paste the URL and Claude picks it up.
 
@@ -113,6 +124,8 @@ config files, browser cookies, or local files, and never uses yt-dlp's
 ## Tips
 
 - **Large playlists** — use `--limit 10` to test before fetching a 50-video course
+- **Channels** — point the skill at `https://youtube.com/@handle/videos` (or `/shorts`, `/streams`) to process a channel's uploads like a playlist
+- **Incremental** — `--skip-existing` skips videos already in `raw/youtube/`; pair with `--after`/`--before` for dated catch-ups
 - **No captions?** — Claude will still write an article using title, channel, and description
 - **Works great with Obsidian** — the iframe renders the video inline; timestamps open the video at that moment
 - **LLM knowledge base users** — the fetch script is bundled with the skill, so no `tools/` setup is needed
