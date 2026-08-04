@@ -21,6 +21,7 @@ Usage:
     Limit videos:      uv run youtube_fetch.py <playlist_url> --limit 10
     Skip fetched:      uv run youtube_fetch.py <url> --skip-existing
     Date range:        uv run youtube_fetch.py <playlist_url> --after 2026-01-01 --before 2026-06-30
+    Transcribe audio:  uv run youtube_fetch.py <url> --transcribe [--transcribe-lang english]
 
 Flags (playlist/channel fetches):
     --limit N              only the first N videos
@@ -28,18 +29,29 @@ Flags (playlist/channel fetches):
     --after YYYY-MM-DD     only videos uploaded on/after this date (inclusive)
     --before YYYY-MM-DD    only videos uploaded on/before this date (inclusive)
 
+Flags (all fetches):
+    --transcribe           if a video has no captions, download the audio track
+                           and transcribe it locally with mlxscribe
+    --transcribe-lang LANG transcribe and translate to LANG (e.g. english)
+
 Security: only YouTube URLs (youtube.com / youtu.be) are accepted.
-Only metadata + captions are fetched; nothing is written outside raw/youtube/.
+Only metadata, captions, and (with --transcribe) the audio track are fetched;
+nothing is written outside raw/youtube/.
 """
 
+import os
+import shlex
+import shutil
 import sys
 import json
 import re
 import subprocess
+import tempfile
 import time
 import urllib.parse
 from datetime import datetime
 from pathlib import Path
+from types import SimpleNamespace
 
 OUT_DIR = Path.cwd() / "raw" / "youtube"
 
@@ -252,6 +264,102 @@ def fetch_transcript(video_id: str) -> list:
 
 
 # ---------------------------------------------------------------------------
+# Audio transcription (mlxscribe fallback)
+# ---------------------------------------------------------------------------
+
+def require_ffmpeg() -> bool:
+    if shutil.which("ffmpeg") is None:
+        print("WARNING: ffmpeg not found on PATH (needed for --transcribe). "
+              "Install with: brew install ffmpeg", file=sys.stderr)
+        return False
+    return True
+
+
+def parse_srt_to_segments(content: str) -> list:
+    """Parse SRT content into transcript-like segments (with .start/.text)."""
+    srt_timing_re = re.compile(
+        r"(\d{1,2}):(\d{2}):(\d{2}),(\d{3})\s*-->\s*"
+        r"\d{1,2}:\d{2}:\d{2},\d{3}"
+    )
+    segments = []
+    for block in content.strip().split("\n\n"):
+        lines = block.splitlines()
+        if len(lines) < 3:
+            continue
+        m = srt_timing_re.match(lines[1])
+        if not m:
+            continue
+        h, mi, s, ms = (int(x) for x in m.groups())
+        start = h * 3600 + mi * 60 + s + ms / 1000.0
+        text = " ".join(" ".join(lines[2:]).split())
+        if not text or text == "[inaudible]":
+            continue
+        segments.append(SimpleNamespace(start=start, end=None, text=text))
+    return segments
+
+
+def transcribe_audio(url: str, transcribe_lang: str | None = None) -> list:
+    """Download the audio track and transcribe it with mlxscribe.
+
+    Returns transcript-like segments (with .start/.text), or [] on failure.
+    Invocation honors the MLXSCRIBE_CMD env var; the default runs the published
+    mlxscribe package through uv.
+    """
+    if not require_ffmpeg():
+        return []
+    tmpdir = tempfile.mkdtemp(prefix="yt-audio-")
+    try:
+        print("  Downloading audio track...")
+        subprocess.run(
+            [sys.executable, "-m", "yt_dlp", "-f", "ba",
+             "--no-config", "--no-cookies-from-browser",
+             "-o", str(Path(tmpdir) / "audio.%(ext)s"), url],
+            check=True, capture_output=True, text=True, timeout=600,
+        )
+        audio_files = sorted(Path(tmpdir).glob("audio.*"))
+        if not audio_files:
+            print("  WARNING: no audio track downloaded.", file=sys.stderr)
+            return []
+        audio_path = audio_files[0]
+
+        mlx_cmd = os.environ.get("MLXSCRIBE_CMD")
+        if not mlx_cmd:
+            mlx_cmd = "uvx --from git+https://github.com/edwardchoh/mlxscribe mlxscribe"
+        cmd = shlex.split(mlx_cmd)
+        cmd += ["--no-mux", "--output-dir", tmpdir, "--format", "srt", str(audio_path)]
+        if transcribe_lang:
+            cmd += ["--translate-to", transcribe_lang]
+
+        print("  Transcribing audio with mlxscribe (this can take a while)...")
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=3600)
+        if result.returncode != 0:
+            if result.stderr.strip():
+                print(result.stderr.strip(), file=sys.stderr)
+            print("  WARNING: mlxscribe transcription failed.", file=sys.stderr)
+            return []
+
+        srt_files = sorted(Path(tmpdir).glob("audio*.srt"))
+        if not srt_files:
+            print("  WARNING: mlxscribe produced no transcript files.", file=sys.stderr)
+            return []
+        # Prefer the translated track when a target language was requested.
+        pick = srt_files[0]
+        if transcribe_lang:
+            translated = [p for p in srt_files if p.name != "audio.srt"]
+            if translated:
+                pick = translated[0]
+        return parse_srt_to_segments(pick.read_text(encoding="utf-8"))
+    except subprocess.CalledProcessError as e:
+        print(f"  WARNING: audio download failed: {e}", file=sys.stderr)
+        return []
+    except Exception as e:
+        print(f"  WARNING: audio transcription failed: {e}", file=sys.stderr)
+        return []
+    finally:
+        shutil.rmtree(tmpdir, ignore_errors=True)
+
+
+# ---------------------------------------------------------------------------
 # Formatting
 # ---------------------------------------------------------------------------
 
@@ -459,7 +567,8 @@ def existing_files_by_id() -> dict:
 def parse_args(argv: list):
     if not argv:
         print("Usage: uv run youtube_fetch.py <url> [--limit N] [--skip-existing] "
-              "[--after YYYY-MM-DD] [--before YYYY-MM-DD]")
+              "[--after YYYY-MM-DD] [--before YYYY-MM-DD] [--transcribe "
+              "[--transcribe-lang LANG]]")
         sys.exit(1)
 
     url = argv[0].strip()
@@ -467,6 +576,8 @@ def parse_args(argv: list):
     skip_existing = False
     after = None
     before = None
+    transcribe = False
+    transcribe_lang = None
 
     i = 1
     while i < len(argv):
@@ -481,6 +592,13 @@ def parse_args(argv: list):
                 raise ValueError("--limit requires an integer")
         elif arg == "--skip-existing":
             skip_existing = True
+        elif arg == "--transcribe":
+            transcribe = True
+        elif arg == "--transcribe-lang":
+            i += 1
+            if i >= len(argv):
+                raise ValueError("--transcribe-lang requires a language (e.g. english)")
+            transcribe_lang = argv[i]
         elif arg in ("--after", "--before"):
             i += 1
             if i >= len(argv):
@@ -494,7 +612,7 @@ def parse_args(argv: list):
             raise ValueError(f"Unknown argument: {arg}")
         i += 1
 
-    return url, limit, skip_existing, after, before
+    return url, limit, skip_existing, after, before, transcribe, transcribe_lang
 
 
 def fmt_range(after: str, before: str) -> str:
@@ -509,7 +627,8 @@ def fmt_range(after: str, before: str) -> str:
 
 def main():
     try:
-        url, limit, skip_existing, after, before = parse_args(sys.argv[1:])
+        url, limit, skip_existing, after, before, transcribe, transcribe_lang = \
+            parse_args(sys.argv[1:])
     except ValueError as e:
         print(f"ERROR: {e}", file=sys.stderr)
         sys.exit(1)
@@ -586,6 +705,14 @@ def main():
                 print(f"  Words: ~{wc:,}")
             else:
                 print(f"  No transcript available")
+                if transcribe:
+                    transcript = transcribe_audio(vid["url"], transcribe_lang)
+                    if transcript:
+                        has_transcript = True
+                        wc = sum(len(seg_text(s).split()) for s in transcript)
+                        print(f"  Transcribed from audio: ~{wc:,} words.")
+                    else:
+                        print("  WARNING: Audio transcription unavailable.")
 
             filename = write_video_file(vid["id"], meta, transcript, today, prefix=prefix)
             fetched += 1
@@ -638,6 +765,13 @@ def main():
         transcript = fetch_transcript(video_id)
         if not transcript:
             print("  WARNING: No transcript found.")
+            if transcribe:
+                transcript = transcribe_audio(url, transcribe_lang)
+                if transcript:
+                    wc = sum(len(seg_text(s).split()) for s in transcript)
+                    print(f"  Transcribed from audio: ~{wc:,} words.")
+                else:
+                    print("  WARNING: Audio transcription unavailable; writing metadata only.")
         else:
             wc = sum(len(seg_text(s).split()) for s in transcript)
             print(f"  Words: ~{wc:,}")

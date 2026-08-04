@@ -8,6 +8,7 @@ Works with any project — standalone notes folder, Obsidian vault, or an [LLM k
 
 - **Single video** → one markdown article with iframe embed + timestamped sections
 - **Full playlist / course** → course overview article + one file per lecture
+- **No-captions fallback** → transcribes the audio channel locally with mlxscribe (MLX-VLM on Apple Silicon)
 - **Reference mode by default** — exhaustive detail (1,500–5,000 words), not summaries
 - **Clickable timestamps** — every key moment links back to that exact second in the video
 
@@ -39,6 +40,14 @@ Open your project in Claude Code, then:
 /youtube-wiki <playlist_url> --limit 10                # first 10 videos only
 ```
 
+Videos without captions: transcribe the audio locally (requires ffmpeg + an
+Apple Silicon Mac; downloads the Gemma 4 model on first run):
+
+```bash
+uv run scripts/youtube_fetch.py https://youtube.com/watch?v=... --transcribe
+uv run scripts/youtube_fetch.py <url> --transcribe --transcribe-lang english   # + translation
+```
+
 The fetch script ships with the skill and is run via uv:
 
 ```bash
@@ -49,6 +58,7 @@ uv run scripts/youtube_fetch.py <playlist_url> --limit 10                # first
 uv run scripts/youtube_fetch.py <playlist_url> --skip-existing           # only new videos
 uv run scripts/youtube_fetch.py <playlist_url> --after 2026-01-01        # uploads on/after date
 uv run scripts/youtube_fetch.py <playlist_url> --before 2026-06-30       # uploads on/before date
+uv run scripts/youtube_fetch.py <url> --transcribe                       # ASR when no captions
 ```
 
 - **Watch a channel over time** — re-run `--skip-existing` periodically; it skips any
@@ -56,6 +66,9 @@ uv run scripts/youtube_fetch.py <playlist_url> --before 2026-06-30       # uploa
   index re-lists the rest as already fetched.
 - **Date filtering** — `--after` / `--before` (inclusive, `YYYY-MM-DD`) restrict to a window
   of upload dates. Combine with `--skip-existing` for incremental catches up to a date.
+- **No captions?** — add `--transcribe` to download the audio track and transcribe it locally
+  with mlxscribe (`--transcribe-lang <lang>` also produces a translation). Override the
+  invocation with the `MLXSCRIBE_CMD` env var.
 
 Or natural language: *"compile this video"*, *"process this playlist"*, *"get the transcript for this"* — paste the URL and Claude picks it up.
 
@@ -112,21 +125,26 @@ Every compiled article includes:
 - `youtube-transcript-api` — fetches captions (auto-installed by `uv`)
 - `yt-dlp` — fetches metadata: title, channel, duration (auto-installed by `uv`)
 
-Videos must have captions (auto-generated or manual). Most YouTube videos do.
+Videos must have captions (auto-generated or manual) — or run with
+`--transcribe` to transcribe the audio locally. That path additionally needs:
+ffmpeg (`brew install ffmpeg`), an Apple Silicon Mac, and Python 3.12+ (for
+mlxscribe, installed automatically via `uvx`).
 
 ## Security
 
 `scripts/youtube_fetch.py` accepts only YouTube URLs (`youtube.com` / `youtu.be`), fetches
-only metadata and captions, and writes only to `raw/youtube/`. It never reads
-config files, browser cookies, or local files, and never uses yt-dlp's
-`--exec`/output options. Only the YouTube URL/video ID ever goes over the network.
+only metadata, captions, and (with `--transcribe`) the audio track, and writes only to
+`raw/youtube/`. It never reads config files, browser cookies, or local files, and never uses
+yt-dlp's `--exec`/output options. With `--transcribe`, the audio stream is downloaded to an
+ephemeral temp dir and removed afterward; mlxscribe runs with `--no-mux`, so the source file
+is never modified. Only the YouTube URL/video ID ever goes over the network.
 
 ## Tips
 
 - **Large playlists** — use `--limit 10` to test before fetching a 50-video course
 - **Channels** — point the skill at `https://youtube.com/@handle/videos` (or `/shorts`, `/streams`) to process a channel's uploads like a playlist
 - **Incremental** — `--skip-existing` skips videos already in `raw/youtube/`; pair with `--after`/`--before` for dated catch-ups
-- **No captions?** — Claude will still write an article using title, channel, and description
+- **No captions?** — add `--transcribe` to the fetch; it downloads the audio and transcribes it locally, and Claude compiles the article from the real transcript instead of metadata only
 - **Works great with Obsidian** — the iframe renders the video inline; timestamps open the video at that moment
 - **LLM knowledge base users** — the fetch script is bundled with the skill, so no `tools/` setup is needed
 
