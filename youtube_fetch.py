@@ -1,17 +1,27 @@
 #!/usr/bin/env python3
+# /// script
+# requires-python = ">=3.9"
+# dependencies = [
+#     "youtube-transcript-api>=0.6.0",
+#     "yt-dlp",
+# ]
+# ///
 """
 youtube_fetch.py — Fetch YouTube metadata and transcript to markdown files.
 
 Works standalone or inside an LLM knowledge base.
 Output goes to raw/youtube/ relative to the current working directory.
 
-Usage:
-    Single video:  python youtube_fetch.py <youtube_url>
-    Playlist:      python youtube_fetch.py <playlist_url>
-    Limit videos:  python youtube_fetch.py <playlist_url> --limit 10
+Run with uv (dependencies are declared inline above and installed
+automatically into an ephemeral environment):
 
-Dependencies:
-    pip install youtube-transcript-api yt-dlp
+Usage:
+    Single video:  uv run youtube_fetch.py <youtube_url>
+    Playlist:      uv run youtube_fetch.py <playlist_url>
+    Limit videos:  uv run youtube_fetch.py <playlist_url> --limit 10
+
+Security: only YouTube URLs (youtube.com / youtu.be) are accepted.
+Only metadata + captions are fetched; nothing is written outside raw/youtube/.
 """
 
 import sys
@@ -19,10 +29,32 @@ import json
 import re
 import subprocess
 import time
+import urllib.parse
 from datetime import datetime
 from pathlib import Path
 
 OUT_DIR = Path.cwd() / "raw" / "youtube"
+
+VIDEO_ID_RE = re.compile(r"^[a-zA-Z0-9_-]{11}$")
+
+
+# ---------------------------------------------------------------------------
+# URL validation
+# ---------------------------------------------------------------------------
+
+def assert_youtube_url(url: str) -> None:
+    """Reject anything that is not a YouTube URL (http/https, youtube.com/youtu.be)."""
+    parsed = urllib.parse.urlparse(url)
+    if parsed.scheme not in ("http", "https"):
+        raise ValueError(f"Only http(s) YouTube URLs are allowed: {url}")
+    host = (parsed.hostname or "").lower()
+    if host != "youtu.be" and host != "youtube.com" and not host.endswith(".youtube.com"):
+        raise ValueError(f"Only YouTube URLs are allowed: {url}")
+
+
+def assert_valid_video_id(video_id: str) -> None:
+    if not VIDEO_ID_RE.fullmatch(video_id):
+        raise ValueError(f"Invalid YouTube video ID: {video_id!r}")
 
 
 # ---------------------------------------------------------------------------
@@ -64,7 +96,9 @@ def extract_video_id(url: str) -> str:
 def fetch_metadata(url: str) -> dict:
     try:
         result = subprocess.run(
-            [sys.executable, "-m", "yt_dlp", "--dump-json", "--no-download", url],
+            [sys.executable, "-m", "yt_dlp",
+             "--dump-json", "--no-download", "--no-playlist",
+             "--no-config", "--no-cookies-from-browser", url],
             capture_output=True, text=True, check=True, timeout=30
         )
         first_line = result.stdout.strip().splitlines()[0]
@@ -78,7 +112,8 @@ def fetch_metadata(url: str) -> dict:
             "description": (data.get("description", "") or "")[:600],
         }
     except FileNotFoundError:
-        print("WARNING: yt-dlp not found. Run: pip install yt-dlp", file=sys.stderr)
+        print("WARNING: yt-dlp not found. Run: uv run youtube_fetch.py <url>",
+              file=sys.stderr)
         return _empty_meta()
     except (subprocess.CalledProcessError, subprocess.TimeoutExpired, json.JSONDecodeError) as e:
         print(f"WARNING: yt-dlp failed: {e}", file=sys.stderr)
@@ -89,6 +124,7 @@ def fetch_playlist_videos(playlist_url: str, limit: int = None) -> list:
     cmd = [
         sys.executable, "-m", "yt_dlp",
         "--flat-playlist", "--dump-json", "--no-warnings",
+        "--no-config", "--no-cookies-from-browser",
         playlist_url,
     ]
     if limit:
@@ -97,7 +133,7 @@ def fetch_playlist_videos(playlist_url: str, limit: int = None) -> list:
     try:
         result = subprocess.run(cmd, capture_output=True, text=True, check=True, timeout=120)
     except FileNotFoundError:
-        print("ERROR: yt-dlp not found. Run: pip install yt-dlp", file=sys.stderr)
+        print("ERROR: yt-dlp not found. Run: uv run youtube_fetch.py <url>", file=sys.stderr)
         sys.exit(1)
     except (subprocess.TimeoutExpired, subprocess.CalledProcessError) as e:
         print(f"ERROR: yt-dlp failed: {e}", file=sys.stderr)
@@ -126,7 +162,8 @@ def fetch_playlist_metadata(playlist_url: str) -> dict:
     try:
         result = subprocess.run(
             [sys.executable, "-m", "yt_dlp",
-             "--flat-playlist", "--dump-single-json", "--no-warnings", playlist_url],
+             "--flat-playlist", "--dump-single-json", "--no-warnings",
+             "--no-config", "--no-cookies-from-browser", playlist_url],
             capture_output=True, text=True, check=True, timeout=60
         )
         data = json.loads(result.stdout)
@@ -152,10 +189,12 @@ def _empty_meta() -> dict:
 # ---------------------------------------------------------------------------
 
 def fetch_transcript(video_id: str) -> list:
+    assert_valid_video_id(video_id)
     try:
         from youtube_transcript_api import YouTubeTranscriptApi
     except ImportError:
-        print("ERROR: Run: pip install youtube-transcript-api", file=sys.stderr)
+        print("ERROR: Run: uv run youtube_fetch.py <url> "
+              "(installs youtube-transcript-api automatically)", file=sys.stderr)
         sys.exit(1)
 
     api = YouTubeTranscriptApi()
@@ -341,11 +380,16 @@ type: playlist-index
 
 def main():
     if len(sys.argv) < 2:
-        print("Usage: python youtube_fetch.py <url> [--limit N]")
-        print("       python youtube_fetch.py <playlist_url> [--limit N]")
+        print("Usage: uv run youtube_fetch.py <url> [--limit N]")
+        print("       uv run youtube_fetch.py <playlist_url> [--limit N]")
         sys.exit(1)
 
     url = sys.argv[1].strip()
+    try:
+        assert_youtube_url(url)
+    except ValueError as e:
+        print(f"ERROR: {e}", file=sys.stderr)
+        sys.exit(1)
     today = datetime.now().strftime("%Y-%m-%d")
 
     limit = None

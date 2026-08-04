@@ -13,15 +13,19 @@ Works with any project — standalone notes folder, Obsidian vault, or an [LLM k
 
 ## Install
 
+Requirements: [uv](https://docs.astral.sh/uv/) (Python ≥ 3.9).
+
 ```bash
+brew install uv          # or see https://docs.astral.sh/uv/getting-started/installation/
 git clone https://github.com/zerowing113/claude-youtube-skill.git
 cd claude-youtube-skill
-python setup.py
 ```
 
-`setup.py` installs the Claude Code skill to `~/.claude/skills/youtube/` and runs `pip install youtube-transcript-api yt-dlp`.
+Copy `youtube_fetch.py` into your project directory (or a `tools/` subfolder). The
+dependencies (`youtube-transcript-api`, `yt-dlp`) are declared inline in the script
+and installed automatically by `uv` on first run — no separate install step.
 
-Then copy `youtube_fetch.py` into your project directory (or a `tools/` subfolder).
+Install `SKILL.md` as a skill however you manage Claude skills (e.g. `npx skills`).
 
 ## Usage
 
@@ -31,6 +35,14 @@ Open your project in Claude Code, then:
 /youtube https://youtube.com/watch?v=...          # single video
 /youtube https://youtube.com/playlist?list=...    # full playlist or course
 /youtube <playlist_url> --limit 10                # first 10 videos only
+```
+
+The fetch script itself is run via uv:
+
+```bash
+uv run youtube_fetch.py https://youtube.com/watch?v=...          # single video
+uv run youtube_fetch.py https://youtube.com/playlist?list=...    # full playlist
+uv run youtube_fetch.py <playlist_url> --limit 10                # first 10 videos
 ```
 
 Or natural language: *"compile this video"*, *"process this playlist"*, *"get the transcript for this"* — paste the URL and Claude picks it up.
@@ -69,11 +81,19 @@ Every compiled article includes:
 ## Requirements
 
 - [Claude Code](https://claude.ai/code)
-- Python 3.8+
-- `youtube-transcript-api` — fetches captions (installed by `setup.py`)
-- `yt-dlp` — fetches metadata: title, channel, duration (installed by `setup.py`)
+- [uv](https://docs.astral.sh/uv/) — runs the script and auto-installs its dependencies
+- Python 3.9+
+- `youtube-transcript-api` — fetches captions (auto-installed by `uv`)
+- `yt-dlp` — fetches metadata: title, channel, duration (auto-installed by `uv`)
 
 Videos must have captions (auto-generated or manual). Most YouTube videos do.
+
+## Security
+
+`youtube_fetch.py` accepts only YouTube URLs (`youtube.com` / `youtu.be`), fetches
+only metadata and captions, and writes only to `raw/youtube/`. It never reads
+config files, browser cookies, or local files, and never uses yt-dlp's
+`--exec`/output options. Only the YouTube URL/video ID ever goes over the network.
 
 ## Tips
 

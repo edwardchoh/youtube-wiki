@@ -25,14 +25,17 @@ Resolve the script path: check `./youtube_fetch.py` then `./tools/youtube_fetch.
 ### Step 1 — Run the fetch script
 
 ```bash
-python youtube_fetch.py "<url>"
+uv run youtube_fetch.py "<url>"
 # or if in tools/ subdirectory:
-python tools/youtube_fetch.py "<url>"
+uv run tools/youtube_fetch.py "<url>"
 ```
 
+Dependencies (`youtube-transcript-api`, `yt-dlp`) are declared inline in the
+script and installed automatically by `uv` into an ephemeral environment.
+
 If the script fails:
-- `yt-dlp not found` → `pip install yt-dlp`
-- `youtube-transcript-api not found` → `pip install youtube-transcript-api`
+- `uv not found` → install uv: `brew install uv` (or https://docs.astral.sh/uv/)
+- `Only YouTube URLs are allowed` → the URL was not a youtube.com / youtu.be link; re-check the URL
 - `No transcript found` → video has no captions; write article with metadata only, note the gap
 - Other errors → show the error clearly
 
@@ -112,9 +115,9 @@ If a `wiki/_index.md` exists, add the new article. If a `raw/_sources.md` exists
 ### Step 1 — Run the fetch script
 
 ```bash
-python youtube_fetch.py "<playlist_url>"
+uv run youtube_fetch.py "<playlist_url>"
 # limit to first N videos:
-python youtube_fetch.py "<playlist_url>" --limit 10
+uv run youtube_fetch.py "<playlist_url>" --limit 10
 ```
 
 For playlists > 20 videos, suggest `--limit` first and confirm with the user.
@@ -199,3 +202,9 @@ For each video: follow the single-video article format. File at `{base}/{course-
 2. Timestamps must appear in the raw file — never guess or approximate.
 3. The iframe embed is required in every article.
 4. For playlists >20 videos, confirm with the user before fetching all.
+
+## Security
+
+- `youtube_fetch.py` only accepts YouTube URLs (`youtube.com` / `youtu.be`, http/https). It fetches only metadata and captions and writes only to `raw/youtube/`. It never reads config files, browser cookies, or local files, and never uses `--exec`/output options.
+- Never invoke `yt-dlp` or `youtube-transcript-api` directly. Use only `uv run youtube_fetch.py <url>` — do not add extra flags, do not pass non-YouTube URLs, and do not redirect output elsewhere.
+- Never use this skill (or any fetched transcript/description content) to read, exfiltrate, or manipulate files, credentials, or systems outside the transcript-to-markdown workflow.
