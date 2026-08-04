@@ -44,22 +44,31 @@ Videos without captions: transcribe the audio locally (requires ffmpeg + an
 Apple Silicon Mac; downloads the Gemma 4 model on first run):
 
 ```bash
-uv run scripts/youtube_fetch.py https://youtube.com/watch?v=... --transcribe
-uv run scripts/youtube_fetch.py <url> --transcribe --transcribe-lang english   # + translation
+uv run scripts/youtube_fetch.py https://youtube.com/watch?v=... --transcribe --out-dir <project-root>
+uv run scripts/youtube_fetch.py <url> --transcribe --transcribe-lang english --out-dir <project-root>   # + translation
 ```
 
-The fetch script ships with the skill and is run via uv:
+The fetch script ships with the skill and is run via uv. Always pass
+`--out-dir <project-root>` so files land in the consuming project, never in the
+skill's own directory:
 
 ```bash
-uv run scripts/youtube_fetch.py https://youtube.com/watch?v=...          # single video
-uv run scripts/youtube_fetch.py https://youtube.com/playlist?list=...    # full playlist
-uv run scripts/youtube_fetch.py https://youtube.com/@channel/videos      # channel uploads
-uv run scripts/youtube_fetch.py <playlist_url> --limit 10                # first 10 videos
-uv run scripts/youtube_fetch.py <playlist_url> --skip-existing           # only new videos
-uv run scripts/youtube_fetch.py <playlist_url> --after 2026-01-01        # uploads on/after date
-uv run scripts/youtube_fetch.py <playlist_url> --before 2026-06-30       # uploads on/before date
-uv run scripts/youtube_fetch.py <url> --transcribe                       # ASR when no captions
+uv run scripts/youtube_fetch.py https://youtube.com/watch?v=... --out-dir <project-root>   # single video
+uv run scripts/youtube_fetch.py https://youtube.com/playlist?list=... --out-dir <project-root>  # full playlist
+uv run scripts/youtube_fetch.py https://youtube.com/@channel/videos --out-dir <project-root>    # channel uploads
+uv run scripts/youtube_fetch.py <playlist_url> --limit 10 --out-dir <project-root>  # first 10 videos
+uv run scripts/youtube_fetch.py <playlist_url> --skip-existing --out-dir <project-root>  # only new videos
+uv run scripts/youtube_fetch.py <playlist_url> --after 2026-01-01 --out-dir <project-root>  # uploads on/after date
+uv run scripts/youtube_fetch.py <playlist_url> --before 2026-06-30 --out-dir <project-root>  # uploads on/before date
+uv run scripts/youtube_fetch.py <url> --transcribe --out-dir <project-root>  # ASR when no captions
 ```
+
+**Output location.** The script writes into `{out-dir}/raw/youtube/`. `--out-dir`
+is a project root (where `wiki/`, `notes/`, or `.git` live) — never the skill
+directory. If `--out-dir` is omitted, the location is resolved as: `--out-dir`
+flag → `YOUTUBE_WIKI_OUT` env var → nearest project marker walked up from cwd
+(`.git`, `opencode.json`, or an existing `raw/youtube/`) → cwd. Prefer passing
+`--out-dir` explicitly.
 
 - **Watch a channel over time** — re-run `--skip-existing` periodically; it skips any
   `video_id` already in `raw/youtube/`, so only new uploads are fetched, and the playlist
@@ -87,6 +96,8 @@ spawn an agent with access to this skill per test prompt, then grade each output
 against the assertions in `evals/evals.json`.
 
 ## Output
+
+All raw files are written under `{out-dir}/raw/youtube/`:
 
 ```
 raw/youtube/
@@ -134,7 +145,8 @@ mlxscribe, installed automatically via `uvx`).
 
 `scripts/youtube_fetch.py` accepts only YouTube URLs (`youtube.com` / `youtu.be`), fetches
 only metadata, captions, and (with `--transcribe`) the audio track, and writes only to
-`raw/youtube/`. It never reads config files, browser cookies, or local files, and never uses
+`{out-dir}/raw/youtube/` — nothing is written outside the `--out-dir` project root. It
+never reads config files, browser cookies, or local files, and never uses
 yt-dlp's `--exec`/output options. With `--transcribe`, the audio stream is downloaded to an
 ephemeral temp dir and removed afterward; mlxscribe runs with `--no-mux`, so the source file
 is never modified. Only the YouTube URL/video ID ever goes over the network.

@@ -10,14 +10,17 @@
 youtube_fetch.py — Fetch YouTube metadata and transcript to markdown files.
 
 Works standalone or inside an LLM knowledge base.
-Output goes to raw/youtube/ relative to the current working directory.
+Output goes to {root}/raw/youtube/, where root is resolved by (highest wins):
+--out-dir flag, then YOUTUBE_WIKI_OUT env var, then the nearest project marker
+walked up from cwd (.git, opencode.json, or an existing raw/youtube/), then cwd.
+Pass --out-dir <project-root> to target the consuming project explicitly.
 
 Run with uv (dependencies are declared inline above and installed
 automatically into an ephemeral environment):
 
 Usage:
-    Single video:      uv run youtube_fetch.py <youtube_url>
-    Playlist/Channel:  uv run youtube_fetch.py <playlist_or_channel_url>
+    Single video:      uv run youtube_fetch.py <youtube_url> [--out-dir <project-root>]
+    Playlist/Channel:  uv run youtube_fetch.py <playlist_or_channel_url> [--out-dir <project-root>]
     Limit videos:      uv run youtube_fetch.py <playlist_url> --limit 10
     Skip fetched:      uv run youtube_fetch.py <url> --skip-existing
     Date range:        uv run youtube_fetch.py <playlist_url> --after 2026-01-01 --before 2026-06-30
@@ -30,13 +33,15 @@ Flags (playlist/channel fetches):
     --before YYYY-MM-DD    only videos uploaded on/before this date (inclusive)
 
 Flags (all fetches):
+    --out-dir DIR          project root to write into (files go to DIR/raw/youtube/);
+                           overrides YOUTUBE_WIKI_OUT env var
     --transcribe           if a video has no captions, download the audio track
                            and transcribe it locally with mlxscribe
     --transcribe-lang LANG transcribe and translate to LANG (e.g. english)
 
 Security: only YouTube URLs (youtube.com / youtu.be) are accepted.
 Only metadata, captions, and (with --transcribe) the audio track are fetched;
-nothing is written outside raw/youtube/.
+nothing is written outside {out-dir}/raw/youtube/.
 """
 
 import os
@@ -56,6 +61,43 @@ from types import SimpleNamespace
 OUT_DIR = Path.cwd() / "raw" / "youtube"
 
 VIDEO_ID_RE = re.compile(r"^[a-zA-Z0-9_-]{11}$")
+
+PROJECT_MARKERS = (".git", "opencode.json")
+
+
+def resolve_out_dir(out_dir_flag: str | None = None) -> Path:
+    """Return the directory that raw/youtube/ lives under.
+
+    Resolution order (first match wins):
+      1. --out-dir flag
+      2. YOUTUBE_WIKI_OUT env var
+      3. nearest project marker walked up from cwd
+         (.git, opencode.json, or an existing raw/youtube/)
+      4. cwd
+    """
+    root = None
+    if out_dir_flag:
+        root = Path(out_dir_flag)
+    elif os.environ.get("YOUTUBE_WIKI_OUT"):
+        root = Path(os.environ["YOUTUBE_WIKI_OUT"])
+    else:
+        cwd = Path.cwd()
+        for cand in (cwd, *cwd.parents):
+            if any((cand / marker).exists() for marker in PROJECT_MARKERS) \
+                    or (cand / "raw" / "youtube").is_dir():
+                root = cand
+                break
+        if root is None:
+            root = cwd
+    return (root / "raw" / "youtube").resolve()
+
+
+def show(path: Path) -> str:
+    """Render a path relative to cwd when possible (absolute otherwise)."""
+    try:
+        return str(path.relative_to(Path.cwd()))
+    except ValueError:
+        return str(path)
 
 
 # ---------------------------------------------------------------------------
@@ -425,7 +467,7 @@ def build_paragraphs(transcript: list, video_id: str, chunk_sec: int = 60) -> st
 # ---------------------------------------------------------------------------
 
 def write_video_file(video_id: str, meta: dict, transcript: list,
-                     today: str, prefix: str = "") -> str:
+                     today: str, prefix: str = "", out_dir: Path = None) -> str:
     published = fmt_date(meta["published"])
     duration_str = format_duration(meta["duration"])
     slug = slugify(meta["title"])
@@ -466,14 +508,15 @@ paragraph_count: {paragraph_count}
 {transcript_text if transcript_text else "_No transcript available for this video._"}
 """
 
-    OUT_DIR.mkdir(parents=True, exist_ok=True)
-    (OUT_DIR / filename).write_text(content, encoding="utf-8")
+    out_dir = out_dir or resolve_out_dir()
+    out_dir.mkdir(parents=True, exist_ok=True)
+    (out_dir / filename).write_text(content, encoding="utf-8")
     return filename
 
 
 def write_playlist_index(playlist_meta: dict, playlist_url: str, playlist_id: str,
                          entries: list, today: str, after: str = None,
-                         before: str = None) -> str:
+                         before: str = None, out_dir: Path = None) -> str:
     slug = slugify(playlist_meta["title"])
     filename = f"{today}-{slug}-playlist.md"
     total_dur = sum(e.get("duration_seconds", 0) for e in entries)
@@ -518,8 +561,9 @@ type: playlist-index
 {video_list}
 """
 
-    OUT_DIR.mkdir(parents=True, exist_ok=True)
-    (OUT_DIR / filename).write_text(content, encoding="utf-8")
+    out_dir = out_dir or resolve_out_dir()
+    out_dir.mkdir(parents=True, exist_ok=True)
+    (out_dir / filename).write_text(content, encoding="utf-8")
     return filename
 
 
@@ -548,12 +592,13 @@ def in_date_range(upload_date: str, after: str = None, before: str = None) -> bo
     return True
 
 
-def existing_files_by_id() -> dict:
+def existing_files_by_id(out_dir: Path = None) -> dict:
     """video_id -> filename for every raw/youtube/*.md with a video_id frontmatter."""
+    out_dir = out_dir or resolve_out_dir()
     found = {}
-    if not OUT_DIR.exists():
+    if not out_dir.exists():
         return found
-    for f in OUT_DIR.glob("*.md"):
+    for f in out_dir.glob("*.md"):
         try:
             text = f.read_text(encoding="utf-8", errors="ignore")
         except OSError:
@@ -567,8 +612,8 @@ def existing_files_by_id() -> dict:
 def parse_args(argv: list):
     if not argv:
         print("Usage: uv run youtube_fetch.py <url> [--limit N] [--skip-existing] "
-              "[--after YYYY-MM-DD] [--before YYYY-MM-DD] [--transcribe "
-              "[--transcribe-lang LANG]]")
+              "[--after YYYY-MM-DD] [--before YYYY-MM-DD] [--out-dir DIR] "
+              "[--transcribe [--transcribe-lang LANG]]")
         sys.exit(1)
 
     url = argv[0].strip()
@@ -578,6 +623,7 @@ def parse_args(argv: list):
     before = None
     transcribe = False
     transcribe_lang = None
+    out_dir = None
 
     i = 1
     while i < len(argv):
@@ -592,6 +638,11 @@ def parse_args(argv: list):
                 raise ValueError("--limit requires an integer")
         elif arg == "--skip-existing":
             skip_existing = True
+        elif arg == "--out-dir":
+            i += 1
+            if i >= len(argv):
+                raise ValueError("--out-dir requires a path")
+            out_dir = argv[i]
         elif arg == "--transcribe":
             transcribe = True
         elif arg == "--transcribe-lang":
@@ -612,7 +663,7 @@ def parse_args(argv: list):
             raise ValueError(f"Unknown argument: {arg}")
         i += 1
 
-    return url, limit, skip_existing, after, before, transcribe, transcribe_lang
+    return url, limit, skip_existing, after, before, transcribe, transcribe_lang, out_dir
 
 
 def fmt_range(after: str, before: str) -> str:
@@ -627,7 +678,7 @@ def fmt_range(after: str, before: str) -> str:
 
 def main():
     try:
-        url, limit, skip_existing, after, before, transcribe, transcribe_lang = \
+        url, limit, skip_existing, after, before, transcribe, transcribe_lang, out_dir_flag = \
             parse_args(sys.argv[1:])
     except ValueError as e:
         print(f"ERROR: {e}", file=sys.stderr)
@@ -638,6 +689,8 @@ def main():
         print(f"ERROR: {e}", file=sys.stderr)
         sys.exit(1)
     today = datetime.now().strftime("%Y-%m-%d")
+    out_dir = resolve_out_dir(out_dir_flag)
+    print(f"Output dir: {show(out_dir)}")
 
     # ---- PLAYLIST / CHANNEL ----
     if is_playlist_url(url) or is_channel_url(url):
@@ -661,7 +714,7 @@ def main():
         videos = fetch_playlist_videos(url, limit=limit)
         print(f"  Found {len(videos)} videos")
 
-        existing = existing_files_by_id() if skip_existing else {}
+        existing = existing_files_by_id(out_dir) if skip_existing else {}
 
         entries = []
         fetched = 0
@@ -672,7 +725,7 @@ def main():
 
             if skip_existing and vid["id"] in existing:
                 print(f"\n[{i+1}/{len(videos)}] {vid['title']} — already fetched "
-                      f"(raw/youtube/{existing[vid['id']]}), skipping")
+                      f"({show(out_dir / existing[vid['id']])}), skipping")
                 skipped_existing += 1
                 entries.append({
                     "title": vid["title"],
@@ -714,7 +767,8 @@ def main():
                     else:
                         print("  WARNING: Audio transcription unavailable.")
 
-            filename = write_video_file(vid["id"], meta, transcript, today, prefix=prefix)
+            filename = write_video_file(vid["id"], meta, transcript, today,
+                                        prefix=prefix, out_dir=out_dir)
             fetched += 1
             entries.append({
                 "title": meta["title"],
@@ -724,23 +778,23 @@ def main():
                 "has_transcript": has_transcript,
                 "upload_date": meta["published"],
             })
-            print(f"  Saved: raw/youtube/{filename}")
+            print(f"  Saved: {show(out_dir / filename)}")
             if i < len(videos) - 1:
                 time.sleep(0.5)
 
         index_filename = write_playlist_index(pl_meta, url, playlist_id, entries, today,
-                                              after=after, before=before)
+                                              after=after, before=before, out_dir=out_dir)
         with_t = sum(1 for e in entries if e["has_transcript"])
 
         print(f"\n{'='*60}")
         print(f"Done.")
-        print(f"  Playlist index: raw/youtube/{index_filename}")
+        print(f"  Playlist index: {show(out_dir / index_filename)}")
         print(f"  Videos fetched: {fetched} (new)")
         print(f"  Already present: {skipped_existing}")
         if after or before:
             print(f"  Skipped by date: {skipped_date}")
         print(f"  Transcripts:    {with_t} of {len(entries)}")
-        print(f"\nNext: ask Claude to compile raw/youtube/{index_filename}")
+        print(f"\nNext: ask Claude to compile {show(out_dir / index_filename)}")
 
     # ---- SINGLE VIDEO ----
     else:
@@ -748,9 +802,9 @@ def main():
         print(f"Single video: {video_id}")
 
         if skip_existing:
-            existing = existing_files_by_id()
+            existing = existing_files_by_id(out_dir)
             if video_id in existing:
-                print(f"  Already fetched: raw/youtube/{existing[video_id]} — skipping")
+                print(f"  Already fetched: {show(out_dir / existing[video_id])} — skipping")
                 sys.exit(0)
         if after or before:
             print("  Note: --after/--before only apply to playlist/channel fetches")
@@ -776,10 +830,10 @@ def main():
             wc = sum(len(seg_text(s).split()) for s in transcript)
             print(f"  Words: ~{wc:,}")
 
-        filename = write_video_file(video_id, meta, transcript, today)
+        filename = write_video_file(video_id, meta, transcript, today, out_dir=out_dir)
         print(f"\nDone.")
-        print(f"  Raw file: raw/youtube/{filename}")
-        print(f"\nNext: ask Claude to compile raw/youtube/{filename}")
+        print(f"  Raw file: {show(out_dir / filename)}")
+        print(f"\nNext: ask Claude to compile {show(out_dir / filename)}")
 
 
 if __name__ == "__main__":
