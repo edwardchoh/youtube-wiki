@@ -1,5 +1,5 @@
 {
-  "skill_name": "youtube-compile",
+  "skill_name": "youtube-wiki",
   "evals": [
     {
       "id": 1,
@@ -7,7 +7,7 @@
       "prompt": "Compile this talk into a detailed reference article: https://www.youtube.com/watch?v=qp0HIF3SfI4 (Simon Sinek, How Great Leaders Inspire Action)",
       "expected_output": "A raw transcript file under raw/youtube/ plus a compiled markdown article (in notes/ or wiki/) with an embedded player, named content sections, clickable timestamps, and direct quotes.",
       "expectations": [
-        "The fetch was run as `uv run youtube_fetch.py <url>` and a raw file was written to raw/youtube/ with frontmatter containing title, channel, video_id, and the full transcript",
+        "The fetch was run as `uv run scripts/youtube_fetch.py <url>` and a raw file was written to raw/youtube/ with frontmatter containing title, channel, video_id, and the full transcript",
         "A compiled article was written containing an iframe embed pointing at https://www.youtube.com/embed/qp0HIF3SfI4",
         "The article has at least 3 sections named after the video's actual content, not generic names like 'Part 1' or 'Section 2'",
         "The article contains clickable timestamps of the form [MM:SS](https://youtu.be/qp0HIF3SfI4?t=NNN)",

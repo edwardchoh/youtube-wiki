@@ -21,28 +21,29 @@ git clone https://github.com/zerowing113/claude-youtube-skill.git
 cd claude-youtube-skill
 ```
 
-Copy `youtube_fetch.py` into your project directory (or a `tools/` subfolder). The
-dependencies (`youtube-transcript-api`, `yt-dlp`) are declared inline in the script
-and installed automatically by `uv` on first run — no separate install step.
-
-Install `SKILL.md` as a skill however you manage Claude skills (e.g. `npx skills`).
+Install the skill folder however you manage skills (e.g. `npx skills`, or copy the
+folder into your agent's skills directory). The skill ships `scripts/youtube_fetch.py`
+bundled with it, referenced by relative path from the skill root — nothing to copy
+into your project. Dependencies (`youtube-transcript-api`, `yt-dlp`) are declared
+inline in the script and installed automatically by `uv` on first run — no separate
+install step.
 
 ## Usage
 
 Open your project in Claude Code, then:
 
 ```
-/youtube https://youtube.com/watch?v=...          # single video
-/youtube https://youtube.com/playlist?list=...    # full playlist or course
-/youtube <playlist_url> --limit 10                # first 10 videos only
+/youtube-wiki https://youtube.com/watch?v=...          # single video
+/youtube-wiki https://youtube.com/playlist?list=...    # full playlist or course
+/youtube-wiki <playlist_url> --limit 10                # first 10 videos only
 ```
 
-The fetch script itself is run via uv:
+The fetch script ships with the skill and is run via uv:
 
 ```bash
-uv run youtube_fetch.py https://youtube.com/watch?v=...          # single video
-uv run youtube_fetch.py https://youtube.com/playlist?list=...    # full playlist
-uv run youtube_fetch.py <playlist_url> --limit 10                # first 10 videos
+uv run scripts/youtube_fetch.py https://youtube.com/watch?v=...          # single video
+uv run scripts/youtube_fetch.py https://youtube.com/playlist?list=...    # full playlist
+uv run scripts/youtube_fetch.py <playlist_url> --limit 10                # first 10 videos
 ```
 
 Or natural language: *"compile this video"*, *"process this playlist"*, *"get the transcript for this"* — paste the URL and Claude picks it up.
@@ -104,7 +105,7 @@ Videos must have captions (auto-generated or manual). Most YouTube videos do.
 
 ## Security
 
-`youtube_fetch.py` accepts only YouTube URLs (`youtube.com` / `youtu.be`), fetches
+`scripts/youtube_fetch.py` accepts only YouTube URLs (`youtube.com` / `youtu.be`), fetches
 only metadata and captions, and writes only to `raw/youtube/`. It never reads
 config files, browser cookies, or local files, and never uses yt-dlp's
 `--exec`/output options. Only the YouTube URL/video ID ever goes over the network.
@@ -114,7 +115,7 @@ config files, browser cookies, or local files, and never uses yt-dlp's
 - **Large playlists** — use `--limit 10` to test before fetching a 50-video course
 - **No captions?** — Claude will still write an article using title, channel, and description
 - **Works great with Obsidian** — the iframe renders the video inline; timestamps open the video at that moment
-- **LLM knowledge base users** — drop `youtube_fetch.py` in your `tools/` folder; the skill auto-detects it
+- **LLM knowledge base users** — the fetch script is bundled with the skill, so no `tools/` setup is needed
 
 ## Credits
 
