@@ -1,0 +1,56 @@
+{
+  "skill_name": "youtube-compile",
+  "evals": [
+    {
+      "id": 1,
+      "name": "single-video-compile",
+      "prompt": "Compile this talk into a detailed reference article: https://www.youtube.com/watch?v=qp0HIF3SfI4 (Simon Sinek, How Great Leaders Inspire Action)",
+      "expected_output": "A raw transcript file under raw/youtube/ plus a compiled markdown article (in notes/ or wiki/) with an embedded player, named content sections, clickable timestamps, and direct quotes.",
+      "expectations": [
+        "The fetch was run as `uv run youtube_fetch.py <url>` and a raw file was written to raw/youtube/ with frontmatter containing title, channel, video_id, and the full transcript",
+        "A compiled article was written containing an iframe embed pointing at https://www.youtube.com/embed/qp0HIF3SfI4",
+        "The article has at least 3 sections named after the video's actual content, not generic names like 'Part 1' or 'Section 2'",
+        "The article contains clickable timestamps of the form [MM:SS](https://youtu.be/qp0HIF3SfI4?t=NNN)",
+        "The article contains at least one direct quote attributed to the speaker with a timestamp",
+        "Every factual claim in the article can be traced back to text present in the raw transcript file; nothing was fabricated"
+      ]
+    },
+    {
+      "id": 2,
+      "name": "playlist-course-compile",
+      "prompt": "Process this course playlist into notes: https://www.youtube.com/playlist?list=PLZHQObOWTQDNU6R1_67000Dx_ZCJB-3pi",
+      "expected_output": "Per-video raw files under raw/youtube/, a playlist index file, and a course overview article with a videoseries embed, curriculum table, and topic clusters.",
+      "expectations": [
+        "A playlist index markdown file ending in -playlist.md was written to raw/youtube/ containing the playlist title, channel, and a list of the videos",
+        "Individual raw files were written to raw/youtube/ for the playlist's videos, each with a two-digit numeric prefix and its transcript",
+        "A course overview article was written containing an iframe whose src includes videoseries?list=PLZHQObOWTQDNU6R1_67000Dx_ZCJB-3pi",
+        "The course article's curriculum lists the videos in order with links to their raw files and durations",
+        "The skill asked the user before compiling individual lecture articles rather than writing them all silently"
+      ]
+    },
+    {
+      "id": 3,
+      "name": "no-transcript-handling",
+      "prompt": "Compile this video into notes: https://www.youtube.com/watch?v=aqz-KE-bpKQ",
+      "expected_output": "A raw metadata file under raw/youtube/ with no transcript, and a compiled article that notes the missing captions without fabricating any transcript content.",
+      "expectations": [
+        "A raw file was written to raw/youtube/ whose word_count is 0 (no transcript was invented)",
+        "The raw file explicitly indicates that no transcript/captions are available for the video",
+        "The compiled article explicitly notes that the video has no captions or transcript",
+        "The compiled article contains no quotes or timestamp links sourced from a transcript (none exist for this video)"
+      ]
+    },
+    {
+      "id": 4,
+      "name": "non-youtube-url-rejected",
+      "prompt": "Compile this video: https://www.vimeo.com/1234567",
+      "expected_output": "The skill refuses the non-YouTube URL, clearly reports that only YouTube URLs are accepted, and writes no files.",
+      "expectations": [
+        "The skill reported that the URL is not a valid YouTube URL (e.g. 'Only YouTube URLs are allowed')",
+        "The skill did not invoke yt-dlp or youtube-transcript-api against the URL, and wrote no output files",
+        "No article or raw file was created for this request",
+        "The skill did not fabricate any content from the URL"
+      ]
+    }
+  ]
+}

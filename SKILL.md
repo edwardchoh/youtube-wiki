@@ -1,3 +1,8 @@
+---
+name: youtube-compile
+description: Fetches YouTube video, playlist, or course transcripts and compiles them into detailed markdown reference articles with an embedded player and clickable timestamps. Use when the user pastes a YouTube URL (youtube.com/watch, youtu.be, youtube.com/playlist) and asks to process, compile, transcribe, or add it to notes.
+---
+
 # YouTube Compile Skill
 
 Fetches YouTube video(s) transcripts and compiles them into detailed markdown articles with embedded player and clickable timestamps. Works standalone or inside an LLM knowledge base.

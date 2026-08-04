@@ -47,6 +47,20 @@ uv run youtube_fetch.py <playlist_url> --limit 10                # first 10 vide
 
 Or natural language: *"compile this video"*, *"process this playlist"*, *"get the transcript for this"* — paste the URL and Claude picks it up.
 
+## Testing / Evals
+
+`evals/evals.json` defines test prompts plus assertions for verifying the skill
+end-to-end (Anthropic skill-creator format). It covers:
+
+- **Single video compile** — a TED talk is fetched and compiled into a detailed article
+- **Playlist / course compile** — a playlist becomes raw files + a course overview
+- **No-transcript handling** — a caption-less video produces a metadata-only article, nothing fabricated
+- **Non-YouTube URL rejected** — the skill refuses invalid URLs and writes nothing
+
+Run them with a skill-eval harness (e.g. Anthropic's [skill-creator](https://github.com/anthropics/skills/tree/main/skills/skill-creator)):
+spawn an agent with access to this skill per test prompt, then grade each output
+against the assertions in `evals/evals.json`.
+
 ## Output
 
 ```

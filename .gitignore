@@ -3,6 +3,9 @@ raw/
 notes/
 wiki/
 
+# Eval run workspace (intermediate/generated files)
+evals/runs/
+
 # Python
 __pycache__/
 *.pyc
