@@ -32,6 +32,9 @@ directory.
 uv run scripts/youtube_fetch.py "<url>" --out-dir <project-root>
 ```
 
+Run it once **without** `--transcribe`. If the script reports "No transcript
+found", re-run the same command **with** `--transcribe` before writing anything.
+
 Dependencies (`youtube-transcript-api`, `yt-dlp`) are declared inline in the
 script and installed automatically by `uv` into an ephemeral environment.
 
@@ -42,9 +45,12 @@ Only use the flag/env-var paths; never rely on cwd or the marker fallback to
 choose where files land.
 
 If the script fails:
+- `No transcript found` → video has no captions. **Automatically re-run** with
+  `--transcribe` (see [Transcription fallback](#transcription-fallback-no-captions)).
+  Only if transcription fails or is unavailable → write article with metadata
+  only, note the gap.
 - `uv not found` → install uv: `brew install uv` (or https://docs.astral.sh/uv/)
 - `Only YouTube URLs are allowed` → the URL was not a youtube.com / youtu.be link; re-check the URL
-- `No transcript found` → video has no captions. Re-run with `--transcribe` to transcribe the audio locally (see [Transcription fallback](#transcription-fallback-no-captions)). If transcription is unavailable or fails, write article with metadata only, note the gap.
 - Other errors → show the error clearly
 
 Report: file written, word count, paragraph count.
@@ -53,7 +59,7 @@ Report: file written, word count, paragraph count.
 
 When a video has no caption tracks, the script can transcribe the audio channel
 locally with [mlxscribe](https://github.com/edwardchoh/mlxscribe) (MLX-VLM on
-Apple Silicon):
+Apple Silicon). Re-run the fetch with:
 
 ```bash
 uv run scripts/youtube_fetch.py "<url>" --transcribe --out-dir <project-root>
@@ -61,12 +67,14 @@ uv run scripts/youtube_fetch.py "<url>" --transcribe --out-dir <project-root>
 uv run scripts/youtube_fetch.py "<url>" --transcribe --transcribe-lang english --out-dir <project-root>
 ```
 
+- This is the **default path** for caption-less videos — do not write a
+  metadata-only article until transcription has been attempted and failed.
+- Requires `uv`, ffmpeg (`brew install ffmpeg`), and an Apple Silicon Mac. The
+  Gemma 4 model is downloaded to the Hugging Face cache on first run.
 - `--transcribe` downloads the audio track only (`yt-dlp -f ba`) to a temp dir
   and runs mlxscribe in pure-ASR mode (`--no-mux --format srt`).
 - `--transcribe-lang <lang>` additionally asks mlxscribe to translate; the
   translated track is used as the transcript.
-- Requires `uv`, ffmpeg (`brew install ffmpeg`), and an Apple Silicon Mac. The
-  Gemma 4 model is downloaded to the Hugging Face cache on first run.
 - Override the mlxscribe invocation with the `MLXSCRIBE_CMD` env var (e.g.
   `MLXSCRIBE_CMD="uv run ~/src/qwen-asr/transcribe.py"`). Default:
   `uvx --from git+https://github.com/edwardchoh/mlxscribe mlxscribe`.
