@@ -39,6 +39,9 @@ Flags (all fetches):
                            and transcribe it locally with mlxscribe
     --transcribe-lang LANG transcribe and translate to LANG (e.g. english)
 
+If YouTube rate-limits the caption endpoint, the audio track is downloaded and
+transcribed automatically (no --transcribe flag needed).
+
 Security: only YouTube URLs (youtube.com / youtu.be) are accepted.
 Only metadata, captions, and (with --transcribe) the audio track are fetched;
 nothing is written outside {out-dir}/raw/youtube/.
@@ -275,15 +278,20 @@ def _empty_meta() -> dict:
 # Transcript
 # ---------------------------------------------------------------------------
 
+class TranscriptRateLimited(Exception):
+    """Raised when youtube-transcript-api reports YouTube rate-limiting/IP blocking."""
+
+
 def fetch_transcript(video_id: str) -> list:
     assert_valid_video_id(video_id)
     try:
-        from youtube_transcript_api import YouTubeTranscriptApi
+        from youtube_transcript_api import YouTubeTranscriptApi, RequestBlocked, IpBlocked
     except ImportError:
         print("ERROR: Run: uv run youtube_fetch.py <url> "
               "(installs youtube-transcript-api automatically)", file=sys.stderr)
         sys.exit(1)
 
+    rate_limited = (RequestBlocked, IpBlocked)
     api = YouTubeTranscriptApi()
     try:
         tl = api.list(video_id)
@@ -294,15 +302,47 @@ def fetch_transcript(video_id: str) -> list:
         ]:
             try:
                 return getter(tl).fetch()
+            except rate_limited:
+                raise TranscriptRateLimited(video_id)
             except Exception:
                 continue
+    except TranscriptRateLimited:
+        raise
+    except rate_limited:
+        raise TranscriptRateLimited(video_id)
     except Exception:
         pass
 
     try:
         return api.fetch(video_id)
+    except rate_limited:
+        raise TranscriptRateLimited(video_id)
     except Exception:
         return []
+
+
+def fetch_transcript_with_fallback(video_id: str, url: str,
+                                   transcribe_lang: str | None = None,
+                                   transcribe: bool = False) -> tuple:
+    """Return (transcript, source) where source is "captions", "audio", or "".
+
+    Automatically falls back to audio transcription when YouTube rate-limits
+    the caption endpoint (regardless of --transcribe), and also when
+    --transcribe is set and the video has no caption track.
+    """
+    try:
+        transcript = fetch_transcript(video_id)
+        if transcript:
+            return transcript, "captions"
+    except TranscriptRateLimited:
+        print("  WARNING: Transcript endpoint rate-limited by YouTube; "
+              "falling back to audio transcription.", file=sys.stderr)
+        transcript = transcribe_audio(url, transcribe_lang)
+        return (transcript, "audio") if transcript else ([], "")
+    if not transcribe:
+        return [], ""
+    transcript = transcribe_audio(url, transcribe_lang)
+    return (transcript, "audio") if transcript else ([], "")
 
 
 # ---------------------------------------------------------------------------
@@ -751,21 +791,19 @@ def main():
                 continue
 
             print(f"  Fetching transcript...")
-            transcript = fetch_transcript(vid["id"])
+            transcript, source = fetch_transcript_with_fallback(
+                vid["id"], vid["url"], transcribe_lang, transcribe)
             has_transcript = bool(transcript)
             if has_transcript:
                 wc = sum(len(seg_text(s).split()) for s in transcript)
-                print(f"  Words: ~{wc:,}")
+                if source == "audio":
+                    print(f"  Transcribed from audio: ~{wc:,} words.")
+                else:
+                    print(f"  Words: ~{wc:,}")
             else:
                 print(f"  No transcript available")
                 if transcribe:
-                    transcript = transcribe_audio(vid["url"], transcribe_lang)
-                    if transcript:
-                        has_transcript = True
-                        wc = sum(len(seg_text(s).split()) for s in transcript)
-                        print(f"  Transcribed from audio: ~{wc:,} words.")
-                    else:
-                        print("  WARNING: Audio transcription unavailable.")
+                    print("  WARNING: Audio transcription unavailable.")
 
             filename = write_video_file(vid["id"], meta, transcript, today,
                                         prefix=prefix, out_dir=out_dir)
@@ -816,19 +854,18 @@ def main():
         print(f"  Duration: {format_duration(meta['duration'])}")
 
         print("Fetching transcript...")
-        transcript = fetch_transcript(video_id)
+        transcript, source = fetch_transcript_with_fallback(
+            video_id, url, transcribe_lang, transcribe)
         if not transcript:
             print("  WARNING: No transcript found.")
             if transcribe:
-                transcript = transcribe_audio(url, transcribe_lang)
-                if transcript:
-                    wc = sum(len(seg_text(s).split()) for s in transcript)
-                    print(f"  Transcribed from audio: ~{wc:,} words.")
-                else:
-                    print("  WARNING: Audio transcription unavailable; writing metadata only.")
+                print("  WARNING: Audio transcription unavailable; writing metadata only.")
         else:
             wc = sum(len(seg_text(s).split()) for s in transcript)
-            print(f"  Words: ~{wc:,}")
+            if source == "audio":
+                print(f"  Transcribed from audio: ~{wc:,} words.")
+            else:
+                print(f"  Words: ~{wc:,}")
 
         filename = write_video_file(video_id, meta, transcript, today, out_dir=out_dir)
         print(f"\nDone.")
