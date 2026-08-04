@@ -17,8 +17,8 @@ Requirements: [uv](https://docs.astral.sh/uv/) (Python ≥ 3.9).
 
 ```bash
 brew install uv          # or see https://docs.astral.sh/uv/getting-started/installation/
-git clone https://github.com/zerowing113/claude-youtube-skill.git
-cd claude-youtube-skill
+git clone https://github.com/edwardchoh/youtube-wiki.git
+cd youtube-wiki
 ```
 
 Install the skill folder however you manage skills (e.g. `npx skills`, or copy the
