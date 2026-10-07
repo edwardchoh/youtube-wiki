@@ -249,9 +249,11 @@ where it's introduced.]
 - [Playlist index](raw/youtube/{index-filename})
 ```
 
-### Step 4 — Individual lecture articles (on request)
+### Step 4 — Individual lecture articles (mandatory)
 
-Ask first: "Course overview compiled. Compile individual lecture articles too?"
+Compile an individual article for **every** video in the playlist — do not ask
+or wait for confirmation. Only skip a video if its transcript is missing and
+transcription failed; note the gap in the course overview.
 
 For each video: follow the single-video article format. File at `{base}/{course-slug}-{NN}-{slug}.md`. Add backlink to course overview.
 
@@ -272,6 +274,7 @@ For each video: follow the single-video article format. File at `{base}/{course-
 2. Timestamps must appear in the raw file — never guess or approximate.
 3. The iframe embed is required in every article.
 4. For playlists >20 videos, confirm with the user before fetching all.
+5. Playlist/course runs always compile a per-video article for every video; never defer them to a request.
 
 ## Security
 
