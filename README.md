@@ -8,7 +8,7 @@ Works with any project — standalone notes folder, Obsidian vault, or an [LLM k
 
 - **Single video** → one markdown article with iframe embed + timestamped sections
 - **Full playlist / course** → course overview article + one file per lecture
-- **No-captions fallback** → transcribes the audio channel locally with mlxscribe (MLX-VLM on Apple Silicon)
+- **No-captions fallback** → transcribes the audio channel locally: whisper.cpp for English, mlxscribe (MLX-VLM on Apple Silicon) for other languages
 - **Reference mode by default** — exhaustive detail (1,500–5,000 words), not summaries
 - **Clickable timestamps** — every key moment links back to that exact second in the video
 
@@ -40,12 +40,13 @@ Open your project in Claude Code, then:
 /youtube-wiki <playlist_url> --limit 10                # first 10 videos only
 ```
 
-Videos without captions: transcribe the audio locally (requires ffmpeg + an
-Apple Silicon Mac; downloads the Gemma 4 model on first run):
+Videos without captions: transcribe the audio locally. English uses whisper.cpp
+(cross-platform); other languages use mlxscribe on Apple Silicon:
 
 ```bash
 uv run scripts/youtube_fetch.py https://youtube.com/watch?v=... --transcribe --out-dir <project-root>
-uv run scripts/youtube_fetch.py <url> --transcribe --transcribe-lang english --out-dir <project-root>   # + translation
+uv run scripts/youtube_fetch.py <url> --transcribe --transcribe-lang english --out-dir <project-root>   # translate to English (whisper.cpp)
+uv run scripts/youtube_fetch.py <url> --transcribe --transcribe-lang french --out-dir <project-root>    # translate to another language (mlxscribe)
 ```
 
 The fetch script ships with the skill and is run via uv. Always pass
@@ -75,9 +76,10 @@ flag → `YOUTUBE_WIKI_OUT` env var → nearest project marker walked up from cw
   index re-lists the rest as already fetched.
 - **Date filtering** — `--after` / `--before` (inclusive, `YYYY-MM-DD`) restrict to a window
   of upload dates. Combine with `--skip-existing` for incremental catches up to a date.
-- **No captions?** — add `--transcribe` to download the audio track and transcribe it locally
-  with mlxscribe (`--transcribe-lang <lang>` also produces a translation). Override the
-  invocation with the `MLXSCRIBE_CMD` env var.
+- **No captions?** — add `--transcribe` to download the audio track and transcribe it locally.
+  English (or no `--transcribe-lang`) uses whisper.cpp; `--transcribe-lang <lang>` for any other
+  language uses mlxscribe to translate. Override whisper.cpp with `WHISPER_MODEL`/`WHISPER_CLI_CMD`,
+  or mlxscribe with `MLXSCRIBE_CMD`.
 
 Or natural language: *"compile this video"*, *"process this playlist"*, *"get the transcript for this"* — paste the URL and Claude picks it up.
 
@@ -137,9 +139,11 @@ Every compiled article includes:
 - `yt-dlp` — fetches metadata: title, channel, duration (auto-installed by `uv`)
 
 Videos must have captions (auto-generated or manual) — or run with
-`--transcribe` to transcribe the audio locally. That path additionally needs:
-ffmpeg (`brew install ffmpeg`), an Apple Silicon Mac, and Python 3.12+ (for
-mlxscribe, installed automatically via `uvx`).
+`--transcribe` to transcribe the audio locally. That path needs ffmpeg
+(`brew install ffmpeg`). English transcription uses whisper.cpp
+(`brew install whisper.cpp`; the `small` model auto-downloads on first run).
+Translating to another language uses mlxscribe, which additionally needs an
+Apple Silicon Mac and Python 3.12+ (installed automatically via `uvx`).
 
 ## Security
 
@@ -148,8 +152,9 @@ only metadata, captions, and (with `--transcribe`) the audio track, and writes o
 `{out-dir}/raw/youtube/` — nothing is written outside the `--out-dir` project root. It
 never reads config files, browser cookies, or local files, and never uses
 yt-dlp's `--exec`/output options. With `--transcribe`, the audio stream is downloaded to an
-ephemeral temp dir and removed afterward; mlxscribe runs with `--no-mux`, so the source file
-is never modified. Only the YouTube URL/video ID ever goes over the network.
+ephemeral temp dir and removed afterward; the source file is never modified
+(whisper.cpp converts it to 16 kHz mono WAV; mlxscribe runs with `--no-mux`). Only the YouTube
+URL/video ID and model downloads (whisper.cpp `small` + VAD, or Gemma 4) go over the network.
 
 ## Tips
 

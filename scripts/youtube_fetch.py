@@ -36,8 +36,10 @@ Flags (all fetches):
     --out-dir DIR          project root to write into (files go to DIR/raw/youtube/);
                            overrides YOUTUBE_WIKI_OUT env var
     --transcribe           if a video has no captions, download the audio track
-                           and transcribe it locally with mlxscribe
-    --transcribe-lang LANG transcribe and translate to LANG (e.g. english)
+                           and transcribe it locally (whisper.cpp; mlxscribe for
+                           non-English --transcribe-lang targets)
+    --transcribe-lang LANG translate to LANG (e.g. english). "english" uses
+                           whisper.cpp; any other language uses mlxscribe.
 
 If YouTube rate-limits the caption endpoint, the audio track is downloaded and
 transcribed automatically (no --transcribe flag needed).
@@ -57,6 +59,7 @@ import subprocess
 import tempfile
 import time
 import urllib.parse
+import urllib.request
 from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
@@ -346,8 +349,16 @@ def fetch_transcript_with_fallback(video_id: str, url: str,
 
 
 # ---------------------------------------------------------------------------
-# Audio transcription (mlxscribe fallback)
+# Audio transcription (whisper.cpp; mlxscribe for non-English targets)
 # ---------------------------------------------------------------------------
+
+WHISPER_MODEL_DEFAULT = "small"
+WHISPER_MODEL_URL = ("https://huggingface.co/ggerganov/whisper.cpp/"
+                     "resolve/main/{filename}")
+WHISPER_VAD_MODEL = "ggml-silero-v5.1.2.bin"
+WHISPER_VAD_URL = ("https://huggingface.co/ggml-org/whisper-vad/"
+                   "resolve/main/{filename}")
+
 
 def require_ffmpeg() -> bool:
     if shutil.which("ffmpeg") is None:
@@ -355,6 +366,109 @@ def require_ffmpeg() -> bool:
               "Install with: brew install ffmpeg", file=sys.stderr)
         return False
     return True
+
+
+def choose_backend(transcribe_lang: str | None) -> str:
+    """Route by requested target language.
+
+    english (or no target) -> whisper.cpp; any other language -> mlxscribe,
+    which can translate to arbitrary languages.
+    """
+    lang = (transcribe_lang or "").strip().lower()
+    if lang in ("", "english", "en"):
+        return "whisper"
+    return "mlxscribe"
+
+
+def whisper_cache_dir() -> Path:
+    base = os.environ.get("XDG_CACHE_HOME")
+    root = Path(base) if base else Path.home() / ".cache"
+    return root / "whisper.cpp"
+
+
+def resolve_whisper_bin() -> str | None:
+    """Return the whisper.cpp CLI path, or None if not installed."""
+    for name in ("whisper-cli", "whisper-cpp", "main"):
+        found = shutil.which(name)
+        if found:
+            return found
+    return None
+
+
+def _whisper_model_search_dirs() -> list:
+    dirs = [whisper_cache_dir()]
+    for base in ("/opt/homebrew", "/usr/local"):
+        dirs.append(Path(base) / "share" / "whisper.cpp" / "models")
+        dirs.extend(sorted((Path(base) / "Cellar" / "whisper.cpp").glob(
+            "*/share/whisper.cpp/models")))
+    return dirs
+
+
+def _download(url: str, dest: Path) -> bool:
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    part = dest.with_name(dest.name + ".part")
+    try:
+        print(f"  Downloading {dest.name} (first run, may take a while)...")
+        with urllib.request.urlopen(url, timeout=60) as resp, open(part, "wb") as fh:
+            shutil.copyfileobj(resp, fh)
+        part.replace(dest)
+        return True
+    except Exception as e:
+        print(f"  WARNING: download of {dest.name} failed: {e}", file=sys.stderr)
+        if part.exists():
+            part.unlink()
+        return False
+
+
+def ensure_whisper_model() -> Path | None:
+    """Locate (or auto-download) the whisper.cpp model. Honors WHISPER_MODEL."""
+    spec = os.environ.get("WHISPER_MODEL", WHISPER_MODEL_DEFAULT).strip()
+    direct = Path(spec).expanduser()
+    if direct.is_file():
+        return direct
+    filename = spec if spec.endswith(".bin") else f"ggml-{spec}.bin"
+    for d in _whisper_model_search_dirs():
+        cand = d / filename
+        if cand.is_file():
+            return cand
+    dest = whisper_cache_dir() / filename
+    if _download(WHISPER_MODEL_URL.format(filename=filename), dest):
+        return dest
+    print("  WARNING: whisper model unavailable. Set WHISPER_MODEL to a .bin path "
+          "or download from https://huggingface.co/ggerganov/whisper.cpp/tree/main",
+          file=sys.stderr)
+    return None
+
+
+def ensure_whisper_vad_model() -> Path | None:
+    """Locate (or auto-download) the Silero VAD model; empty env disables VAD."""
+    spec = os.environ.get("WHISPER_VAD_MODEL")
+    if spec is not None and spec.strip() == "":
+        return None
+    if spec:
+        cand = Path(spec).expanduser()
+        return cand if cand.is_file() else None
+    for d in _whisper_model_search_dirs():
+        cand = d / WHISPER_VAD_MODEL
+        if cand.is_file():
+            return cand
+    dest = whisper_cache_dir() / WHISPER_VAD_MODEL
+    if _download(WHISPER_VAD_URL.format(filename=WHISPER_VAD_MODEL), dest):
+        return dest
+    return None
+
+
+def require_whisper():
+    """Resolve the whisper.cpp binary + model, or None with guidance."""
+    binary = resolve_whisper_bin()
+    if not binary:
+        print("WARNING: whisper-cli not found on PATH (needed for --transcribe). "
+              "Install with: brew install whisper.cpp", file=sys.stderr)
+        return None
+    model = ensure_whisper_model()
+    if model is None:
+        return None
+    return binary, model
 
 
 def parse_srt_to_segments(content: str) -> list:
@@ -380,35 +494,126 @@ def parse_srt_to_segments(content: str) -> list:
     return segments
 
 
-def transcribe_audio(url: str, transcribe_lang: str | None = None) -> list:
-    """Download the audio track and transcribe it with mlxscribe.
+def strip_repetition_loops(segments: list, min_repeats: int = 3,
+                           max_period: int = 4) -> list:
+    """Collapse whisper repetition loops (e.g. 'Cisco.' / 'That's ... network.').
 
-    Returns transcript-like segments (with .start/.text), or [] on failure.
-    Invocation honors the MLXSCRIBE_CMD env var; the default runs the published
-    mlxscribe package through uv.
+    Drops runs where a short cycle of segments repeats >= min_repeats times,
+    keeping a single instance of the cycle.
     """
+    def norm(seg):
+        return " ".join(seg.text.lower().split())
+
+    out, i, n = [], 0, len(segments)
+    while i < n:
+        collapsed = False
+        for period in range(1, max_period + 1):
+            if i + period * min_repeats > n:
+                continue
+            cycle = [norm(segments[i + k]) for k in range(period)]
+            if any(not c for c in cycle):
+                continue
+            reps, j = 1, i + period
+            while (j + period <= n
+                   and [norm(segments[j + k]) for k in range(period)] == cycle):
+                reps += 1
+                j += period
+            if reps >= min_repeats:
+                out.extend(segments[i:i + period])
+                i = j
+                collapsed = True
+                break
+        if not collapsed:
+            out.append(segments[i])
+            i += 1
+    return out
+
+
+def download_audio(url: str, tmpdir: str) -> Path | None:
+    print("  Downloading audio track...")
+    subprocess.run(
+        [sys.executable, "-m", "yt_dlp", "-f", "ba",
+         "--no-config", "--no-cookies-from-browser",
+         "-o", str(Path(tmpdir) / "audio.%(ext)s"), url],
+        check=True, capture_output=True, text=True, timeout=600,
+    )
+    audio_files = sorted(Path(tmpdir).glob("audio.*"))
+    if not audio_files:
+        print("  WARNING: no audio track downloaded.", file=sys.stderr)
+        return None
+    return audio_files[0]
+
+
+def _to_wav_16k(audio: Path, tmpdir: str) -> Path:
+    wav = Path(tmpdir) / "audio.wav"
+    subprocess.run(
+        ["ffmpeg", "-y", "-loglevel", "error", "-i", str(audio),
+         "-ar", "16000", "-ac", "1", "-c:a", "pcm_s16le", str(wav)],
+        check=True, capture_output=True, text=True, timeout=600,
+    )
+    return wav
+
+
+def transcribe_with_whisper(url: str, translate: bool = False) -> list:
+    resolved = require_whisper()
+    if resolved is None or not require_ffmpeg():
+        return []
+    binary, model = resolved
+    tmpdir = tempfile.mkdtemp(prefix="yt-audio-")
+    try:
+        audio = download_audio(url, tmpdir)
+        if audio is None:
+            return []
+        wav = _to_wav_16k(audio, tmpdir)
+
+        override = os.environ.get("WHISPER_CLI_CMD")
+        cmd = shlex.split(override) if override else [binary]
+        cmd += ["-m", str(model), "-f", str(wav),
+                "-osrt", "-of", str(Path(tmpdir) / "audio"),
+                "-t", str(os.cpu_count() or 4), "-l", "auto", "-np"]
+        vad = ensure_whisper_vad_model()
+        if vad:
+            cmd += ["--vad", "-vm", str(vad)]
+        if translate:
+            cmd += ["-tr"]
+
+        print("  Transcribing audio with whisper.cpp (this can take a while)...")
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=3600)
+        if result.returncode != 0:
+            if result.stderr.strip():
+                print(result.stderr.strip(), file=sys.stderr)
+            print("  WARNING: whisper.cpp transcription failed.", file=sys.stderr)
+            return []
+        srt = Path(tmpdir) / "audio.srt"
+        if not srt.is_file():
+            print("  WARNING: whisper.cpp produced no transcript file.", file=sys.stderr)
+            return []
+        segments = parse_srt_to_segments(srt.read_text(encoding="utf-8"))
+        return strip_repetition_loops(segments)
+    except subprocess.CalledProcessError as e:
+        print(f"  WARNING: audio processing failed: {e}", file=sys.stderr)
+        return []
+    except Exception as e:
+        print(f"  WARNING: audio transcription failed: {e}", file=sys.stderr)
+        return []
+    finally:
+        shutil.rmtree(tmpdir, ignore_errors=True)
+
+
+def transcribe_with_mlxscribe(url: str, transcribe_lang: str | None = None) -> list:
     if not require_ffmpeg():
         return []
     tmpdir = tempfile.mkdtemp(prefix="yt-audio-")
     try:
-        print("  Downloading audio track...")
-        subprocess.run(
-            [sys.executable, "-m", "yt_dlp", "-f", "ba",
-             "--no-config", "--no-cookies-from-browser",
-             "-o", str(Path(tmpdir) / "audio.%(ext)s"), url],
-            check=True, capture_output=True, text=True, timeout=600,
-        )
-        audio_files = sorted(Path(tmpdir).glob("audio.*"))
-        if not audio_files:
-            print("  WARNING: no audio track downloaded.", file=sys.stderr)
+        audio = download_audio(url, tmpdir)
+        if audio is None:
             return []
-        audio_path = audio_files[0]
 
         mlx_cmd = os.environ.get("MLXSCRIBE_CMD")
         if not mlx_cmd:
             mlx_cmd = "uvx --from git+https://github.com/edwardchoh/mlxscribe mlxscribe"
         cmd = shlex.split(mlx_cmd)
-        cmd += ["--no-mux", "--output-dir", tmpdir, "--format", "srt", str(audio_path)]
+        cmd += ["--no-mux", "--output-dir", tmpdir, "--format", "srt", str(audio)]
         if transcribe_lang:
             cmd += ["--translate-to", transcribe_lang]
 
@@ -439,6 +644,17 @@ def transcribe_audio(url: str, transcribe_lang: str | None = None) -> list:
         return []
     finally:
         shutil.rmtree(tmpdir, ignore_errors=True)
+
+
+def transcribe_audio(url: str, transcribe_lang: str | None = None) -> list:
+    """Transcribe a video's audio track.
+
+    Routes by target language: whisper.cpp for English/no target, mlxscribe for
+    any other --transcribe-lang. Returns transcript-like segments or [] on failure.
+    """
+    if choose_backend(transcribe_lang) == "whisper":
+        return transcribe_with_whisper(url, translate=bool(transcribe_lang))
+    return transcribe_with_mlxscribe(url, transcribe_lang)
 
 
 # ---------------------------------------------------------------------------
