@@ -199,7 +199,7 @@ def fetch_metadata(url: str) -> dict:
             "title": data.get("title", "Unknown Title"),
             "channel": data.get("uploader", data.get("channel", "Unknown Channel")),
             "published": data.get("upload_date", ""),
-            "duration": int(data.get("duration", 0)),
+            "duration": int(data.get("duration") or 0),
             "view_count": data.get("view_count", 0),
             "description": (data.get("description", "") or "")[:600],
         }
@@ -241,7 +241,7 @@ def fetch_playlist_videos(playlist_url: str, limit: int = None) -> list:
             videos.append({
                 "id": vid_id,
                 "title": data.get("title", f"Video {len(videos)+1}"),
-                "duration": int(data.get("duration", 0)),
+                "duration": int(data.get("duration") or 0),
                 "channel": data.get("uploader", data.get("channel", "")),
                 "upload_date": data.get("upload_date", ""),
                 "url": f"https://www.youtube.com/watch?v={vid_id}",
